@@ -31,8 +31,8 @@ _CANON_MAP = {
     r"^partner$": "Partner",
     r"^dependents?$": "Dependents",
     r"^churn$": "Churn",
-    r"^churn\s*label$": "Churn",   # Yes/No
-    r"^churn\s*value$": "Churn",   # 0/1
+    r"^churn\s*label$": "Churn",
+    r"^churn\s*value$": "Churn",
     r"^customer\s*status$": "CustomerStatus",
     r"^churn\s*score$": "ChurnScore",
     r"^churn\s*category$": "ChurnCategory",
@@ -42,13 +42,12 @@ _CANON_MAP = {
 # Contract to months (feature)
 _CONTRACT_MAP = {"month-to-month": 1, "one year": 12, "two year": 24}
 
-# Columns that are always useless or identifiers
+# Always drop
 DROP_ALWAYS = {"Count"}
-
-# Columns that leak the target (besides the canonical 'Churn')
-LEAKY_NAMES_LC = {
-    "customerstatus", "churnscore", "churncategory", "churnreason"
-}
+# Non-actionable / dataset-specific extras to drop
+DROP_EXTRA = {"Country","State","City","Zip Code","Lat Long","Latitude","Longitude","CLTV"}
+# Other churn-derived (leaky) names
+LEAKY_NAMES_LC = {"customerstatus","churnscore","churncategory","churnreason"}
 LEAKY_PREFIXES_LC = ("churn ", "churn_")  # e.g., "Churn Label", "Churn Value"
 
 def _strip_lower(s: str) -> str:
@@ -66,23 +65,19 @@ def normalize_column_names(df: pd.DataFrame) -> pd.DataFrame:
                 new = target
                 break
         mapped.append(new if new else str(c).strip())
-
-    # Ensure uniqueness by suffixing duplicates
-    counts = {}
-    unique_cols = []
+    # ensure uniqueness
+    counts, unique = {}, []
     for name in mapped:
         if name in counts:
             counts[name] += 1
-            unique_cols.append(f"{name}__dup{counts[name]}")
+            unique.append(f"{name}__dup{counts[name]}")
         else:
             counts[name] = 0
-            unique_cols.append(name)
-
-    df.columns = unique_cols
+            unique.append(name)
+    df.columns = unique
     return df
 
 def ensure_target_column(df: pd.DataFrame) -> pd.DataFrame:
-    """Create/standardize a canonical 'Churn' column (0/1) from variants like 'Churn Label'/'Churn Value'."""
     df = df.copy()
     if TARGET_COL in df.columns:
         s = df[TARGET_COL]
@@ -91,66 +86,43 @@ def ensure_target_column(df: pd.DataFrame) -> pd.DataFrame:
         else:
             df[TARGET_COL] = (pd.to_numeric(s, errors="coerce").fillna(0) > 0.5).astype(int)
         return df
-
-    # Case/space-insensitive scan for variants
     lc_map = {str(c).strip().lower(): c for c in df.columns}
     for key in ("churn value", "churn_value", "churn label", "churn_label", "churn"):
         if key in lc_map:
-            src = lc_map[key]
-            s = df[src]
+            src = lc_map[key]; s = df[src]
             if s.dtype == "object":
                 df[TARGET_COL] = s.astype(str).str.strip().str.lower().isin(["yes","1","true"]).astype(int)
             else:
                 df[TARGET_COL] = (pd.to_numeric(s, errors="coerce").fillna(0) > 0.5).astype(int)
             return df
-    return df  # if not found, training will error later (good: forces you to pick a target)
+    return df
 
 def drop_leaky_and_useless(df: pd.DataFrame) -> pd.DataFrame:
-    """Drop columns that leak the target or are not useful."""
     to_drop = set()
-
     for c in df.columns:
-        # always-drop list
-        if c in DROP_ALWAYS:
-            to_drop.add(c)
-            continue
-        # drop any duplicate of Churn created by normalization (e.g., Churn__dup1)
-        if c != TARGET_COL and c.lower().startswith("churn__dup"):
-            to_drop.add(c)
-            continue
-        # drop other churn-derived fields (score/category/reason/status)
+        if c in DROP_ALWAYS: to_drop.add(c); continue
+        if c != TARGET_COL and c.lower().startswith("churn__dup"): to_drop.add(c); continue
         lc = c.strip().lower()
-        if lc in LEAKY_NAMES_LC:
-            to_drop.add(c)
-            continue
-        # drop headers that start with "churn " / "churn_" but are not the target
-        if c != TARGET_COL and (lc.startswith(LEAKY_PREFIXES_LC)):
-            to_drop.add(c)
-
+        if lc in LEAKY_NAMES_LC: to_drop.add(c); continue
+        if c != TARGET_COL and lc.startswith(LEAKY_PREFIXES_LC): to_drop.add(c); continue
+        if c in DROP_EXTRA: to_drop.add(c); continue
     if to_drop:
         df = df.drop(columns=list(to_drop), errors="ignore")
     return df
 
 def add_basic_features(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
-    # Contract length in months
     if "Contract" in df.columns:
         df["Contract_norm"] = df["Contract"].astype(str).str.lower().str.strip()
         df["contract_length_months"] = df["Contract_norm"].map(_CONTRACT_MAP).fillna(0).astype(int)
-    # Payment risk flag
     if "PaymentMethod" in df.columns:
         df["is_electronic_check"] = (
             df["PaymentMethod"].astype(str).str.lower().str.contains("electronic check")
         ).astype(int)
-    # Customer support proxy
     if "TechSupport" in df.columns:
-        df["has_tech_support"] = (
-            df["TechSupport"].astype(str).str.strip().str.lower().eq("yes")
-        ).astype(int)
-    # Tenure buckets
+        df["has_tech_support"] = df["TechSupport"].astype(str).str.strip().str.lower().eq("yes").astype(int)
     if "tenure" in df.columns:
         df["tenure_bucket"] = pd.cut(df["tenure"], bins=[-1,6,12,24,48,72,999], labels=False).astype("Int64")
-    # Charges per tenure
     if {"MonthlyCharges","tenure","TotalCharges"}.issubset(df.columns):
         df["charges_per_tenure"] = (df["TotalCharges"] / df["tenure"].replace(0,1)).clip(lower=0)
     return df
@@ -158,12 +130,16 @@ def add_basic_features(df: pd.DataFrame) -> pd.DataFrame:
 def clean_columns(df: pd.DataFrame) -> pd.DataFrame:
     df = normalize_column_names(df)
 
-    # Strip strings (now safe because names are unique)
+    # Strip strings
     obj_cols = [c for c, dt in df.dtypes.items() if dt == "object"]
     for c in obj_cols:
         df[c] = df[c].astype(str).str.strip()
 
-    # Drop obvious IDs
+    # 🔧 Fill missing categoricals BEFORE OHE to avoid isnan/type errors
+    if obj_cols:
+        df[obj_cols] = df[obj_cols].replace({"": None}).fillna("Unknown")
+
+    # Drop IDs
     for c in ID_COLS:
         if c in df.columns:
             df = df.drop(columns=[c])
@@ -178,15 +154,10 @@ def clean_columns(df: pd.DataFrame) -> pd.DataFrame:
         if str(dt).startswith(("float", "int")):
             df[c] = df[c].fillna(df[c].median())
 
-    # Ensure target exists when possible
+    # Target + drops + engineered
     df = ensure_target_column(df)
-
-    # 🔒 Drop leaky churn-related columns except the target
     df = drop_leaky_and_useless(df)
-
-    # Engineered features
     df = add_basic_features(df)
-
     return df
 
 def split_X_y(df: pd.DataFrame):
