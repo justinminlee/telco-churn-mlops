@@ -83,7 +83,7 @@ with tab3:
     shap_file = st.file_uploader("Upload a CSV (optional)", type=["csv"], key="shap")
     if shap_file is not None:
         data = pd.read_csv(shap_file)
-        model = joblib.load("models/model.pkl")
+        model = joblib.load("/pd_models/model.pkl")
         if hasattr(model, 'named_steps') and 'pre' in model.named_steps and 'clf' in model.named_steps:
             pre = model.named_steps['pre']; clf = model.named_steps['clf']
             X = data.drop(columns=['Churn'], errors='ignore')
