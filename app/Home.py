@@ -6,13 +6,19 @@ import joblib
 st.set_page_config(page_title="Churn Predictor — IBM Telco", layout="wide")
 st.title("📉 Customer Churn Predictor — IBM Telco")
 
+def read_uploaded(file):
+    name = file.name.lower()
+    if name.endswith((".xlsx", ".xls")):
+        return pd.read_excel(file, engine="openpyxl")
+    return pd.read_csv(file)
+
 tab1, tab2, tab3 = st.tabs(["Batch scoring", "Single-customer calculator", "Model explainability (SHAP)"])
 
 with tab1:
     st.subheader("Batch scoring & evaluation")
-    uploaded = st.file_uploader("Upload CSV to score/evaluate", type=["csv"], key="batch")
+    uploaded = st.file_uploader("Upload CSV/XLSX to score/evaluate", type=["csv","xlsx","xls"], key="batch")
     if uploaded is not None:
-        df = pd.read_csv(uploaded)
+        df = read_uploaded(uploaded)
         st.write("Preview:", df.head())
         probs = predict_proba_df(df)
         out = df.copy()
@@ -37,7 +43,7 @@ with tab1:
         st.download_button("Download scored CSV", out.to_csv(index=False).encode("utf-8"),
                            "scored_customers.csv", "text/csv")
     else:
-        st.info("Upload the Kaggle CSV you trained on to view metrics and scores.")
+        st.info("Upload the Kaggle CSV/XLSX you trained on to view metrics and scores.")
 
 with tab2:
     st.subheader("Interactive churn probability calculator")
@@ -79,10 +85,10 @@ with tab2:
 
 with tab3:
     st.subheader("Global explainability (SHAP)")
-    st.caption("Upload a CSV (sampled to 500 rows) and see a global beeswarm plot.")
-    shap_file = st.file_uploader("Upload a CSV (optional)", type=["csv"], key="shap")
+    st.caption("Upload a CSV/XLSX (sampled to 500 rows) and see a global beeswarm plot.")
+    shap_file = st.file_uploader("Upload a CSV/XLSX (optional)", type=["csv","xlsx","xls"], key="shap")
     if shap_file is not None:
-        data = pd.read_csv(shap_file)
+        data = read_uploaded(shap_file)
         model = joblib.load("/pd_models/model.pkl")
         if hasattr(model, 'named_steps') and 'pre' in model.named_steps and 'clf' in model.named_steps:
             pre = model.named_steps['pre']; clf = model.named_steps['clf']
@@ -109,4 +115,4 @@ with tab3:
         else:
             st.warning("Saved model is not a pipeline with 'pre' and 'clf'. Retrain with training script.")
     else:
-        st.info("Upload a CSV to generate SHAP global importance.")
+        st.info("Upload a CSV/XLSX to generate SHAP global importance.")
