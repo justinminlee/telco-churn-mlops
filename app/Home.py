@@ -86,29 +86,76 @@ with tab2:
 with tab3:
     st.subheader("Global explainability (SHAP)")
     st.caption("Upload a CSV/XLSX (sampled to 500 rows) and see a global beeswarm plot.")
+
     shap_file = st.file_uploader("Upload a CSV/XLSX (optional)", type=["csv","xlsx","xls"], key="shap")
     if shap_file is not None:
         data = read_uploaded(shap_file)
-        model = joblib.load("/pd_models/model.pkl")
+
+        # Use the same cleaning/feature-engineering as training
+        from src.features.build_features import clean_columns
+        data2 = clean_columns(data)
+
+        import joblib, numpy as np, pandas as pd, shap, matplotlib.pyplot as plt
+        model = joblib.load("./pd_models/model.pkl")
+
         if hasattr(model, 'named_steps') and 'pre' in model.named_steps and 'clf' in model.named_steps:
-            pre = model.named_steps['pre']; clf = model.named_steps['clf']
-            X = data.drop(columns=['Churn'], errors='ignore')
-            Xt = pre.transform(X)
-            # Feature names
+            pre = model.named_steps['pre']
+            clf = model.named_steps['clf']
+
+            # Ensure expected columns exist (Unknown/0) in case upload is missing some
             try:
-                cat = pre.transformers_[0][2]
-                ohe = pre.named_transformers_['cat']
-                cat_names = ohe.get_feature_names_out(cat).tolist()
-                num = pre.transformers_[1][2]
-                feat_names = cat_names + num
+                cat_cols = list(pre.transformers_[0][2]) if pre.transformers_ and len(pre.transformers_) > 0 else []
+                num_cols = list(pre.transformers_[1][2]) if pre.transformers_ and len(pre.transformers_) > 1 else []
             except Exception:
-                feat_names = [f"f{i}" for i in range(Xt.shape[1])]
-            # Sample
-            if Xt.shape[0] > 500:
-                idx = np.random.RandomState(42).choice(Xt.shape[0], 500, replace=False)
-                Xt = Xt[idx]
-            explainer = shap.TreeExplainer(clf) if "xgboost" in str(type(clf)).lower() else shap.Explainer(clf, Xt)
-            shap_values = explainer(Xt)
+                cat_cols, num_cols = [], []
+
+            def ensure_expected_columns(df, cat_cols, num_cols):
+                df = df.copy()
+                for c in cat_cols:
+                    if c not in df.columns: df[c] = "Unknown"
+                for c in num_cols:
+                    if c not in df.columns: df[c] = 0
+                if cat_cols:
+                    df[cat_cols] = df[cat_cols].replace({"": None}).fillna("Unknown")
+                    for c in cat_cols: df[c] = df[c].astype(str)
+                return df
+
+            data2 = ensure_expected_columns(data2, cat_cols, num_cols)
+            X = data2.drop(columns=['Churn'], errors='ignore')
+
+            try:
+                # Best: ask sklearn for all output names directly
+                feat_names = pre.get_feature_names_out().tolist()
+            except Exception:
+                # Fallback: cat one-hot names + numeric columns
+                try:
+                    ohe = pre.named_transformers_['cat']
+                    cat_names = ohe.get_feature_names_out(cat_cols).tolist() if cat_cols else []
+                except Exception:
+                    cat_names = []
+                feat_names = cat_names + num_cols
+
+            # Transform, then wrap into a DataFrame with column names
+            Xt = pre.transform(X)
+            try:
+                Xt_df = pd.DataFrame(Xt, columns=feat_names)
+            except Exception:
+                # If lengths mismatch, fall back to generic names (shouldn’t happen, but safe)
+                Xt_df = pd.DataFrame(Xt, columns=[f"f{i}" for i in range(Xt.shape[1])])
+
+            # Sample (optional) for speed
+            if Xt_df.shape[0] > 500:
+                idx = np.random.RandomState(42).choice(Xt_df.shape[0], 500, replace=False)
+                Xt_df = Xt_df.iloc[idx]
+
+            # Explain
+            if "xgboost" in str(type(clf)).lower():
+                explainer = shap.TreeExplainer(clf)
+                shap_values = explainer(Xt_df)
+            else:
+                explainer = shap.Explainer(clf, Xt_df)
+                shap_values = explainer(Xt_df)
+
             fig = plt.figure()
             shap.plots.beeswarm(shap_values, max_display=15, show=False)
             st.pyplot(fig)

@@ -131,7 +131,14 @@ def clean_columns(df: pd.DataFrame) -> pd.DataFrame:
     df = normalize_column_names(df)
 
     # Strip strings
-    obj_cols = [c for c, dt in df.dtypes.items() if dt == "object"]
+    obj_cols = df.select_dtypes(include=["object", "category", "bool"]).columns.tolist()
+    
+    if obj_cols:
+        df[obj_cols] = df[obj_cols].replace({"": None}).fillna("Unknown")
+    for c in obj_cols:
+        df[c] = df[c].astype(str)   # enforce string dtype for cats
+
+
     for c in obj_cols:
         df[c] = df[c].astype(str).str.strip()
 
